@@ -1,3 +1,17 @@
+CREATE TABLE Aportes (
+    Id INT PRIMARY KEY,
+    Data DATE,
+    Valor DECIMAL(18, 2),
+    TipoAporteId INT
+);
+
+CREATE TABLE TiposAporte (
+    Id INT PRIMARY KEY,
+    Descricao NVARCHAR(100),
+    PercentualMaximoResgate DECIMAL(5, 2)  -- Percentual em formato decimal, ex: 0.75 para 75%
+);
+
+
 CREATE PROCEDURE CalcularImpostoPrevidencia
     @DataResgate DATE,
     @ValorResgate DECIMAL(18, 2)
