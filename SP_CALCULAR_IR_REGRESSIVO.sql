@@ -1,108 +1,87 @@
 CREATE PROCEDURE CalcularImpostoPrevidencia
     @DataResgate DATE,
-    @ValorResgate DECIMAL(10, 2)
+    @ValorResgate DECIMAL(18, 2)
 AS
 BEGIN
-    -- Tabela temporária para armazenar os resultados de cada aporte
+    DECLARE @ImpostoTotal DECIMAL(18, 2) = 0
+    DECLARE @ValorResgateRestante DECIMAL(18, 2) = @ValorResgate
+
+    -- Temporária para armazenar os detalhes dos aportes
     CREATE TABLE #DetalhamentoAportes (
         Data DATE,
-        Valor DECIMAL(10, 2),
+        Valor DECIMAL(18, 2),
+        PercentualMaximoResgate DECIMAL(5, 2),
         TempoAcumulacao DECIMAL(10, 2),
         Aliquota DECIMAL(5, 2),
-        ImpostoCalculado DECIMAL(10, 2)
-    );
+        ValorResgate DECIMAL(18, 2),
+        ImpostoCalculado DECIMAL(18, 2)
+    )
 
-    -- Variáveis para cálculo
-    DECLARE @ImpostoTotal DECIMAL(10, 2);
-    DECLARE @ImpostoAporte DECIMAL(10, 2);
-    DECLARE @TempoAcumulacao DECIMAL(10, 2);
-    DECLARE @Alquota DECIMAL(5, 2);
-    DECLARE @ValorResgateRestante DECIMAL(10, 2);
-    DECLARE @ValorAporte DECIMAL(10, 2);
-    DECLARE @DataAporte DATE;
+    -- Definição das alíquotas
+    DECLARE @Aliquotas TABLE (Limite INT, Aliquota DECIMAL(5, 2))
+    INSERT INTO @Aliquotas VALUES (2, 0.35), (4, 0.30), (6, 0.25), (8, 0.20), (10, 0.15), (NULL, 0.10)
 
-    -- Aportes fictícios para exemplo
-    DECLARE @Aportes TABLE (
-        Data DATE,
-        Valor DECIMAL(10, 2)
-    );
+    -- Cursor para iterar pelos aportes ordenados por data
+    DECLARE AportesCursor CURSOR FOR
+    SELECT a.Data, a.Valor, ta.PercentualMaximoResgate
+    FROM Aportes a
+    JOIN TiposAporte ta ON a.TipoAporteId = ta.Id
+    ORDER BY a.Data
 
-    -- Inserindo dados de exemplo (substituir pelos dados reais)
-    INSERT INTO @Aportes (Data, Valor)
-    VALUES
-        ('2015-01-01', 1000),
-        ('2016-03-15', 1500),
-        ('2017-07-20', 800),
-        ('2018-11-10', 1200),
-        ('2019-05-30', 2000);
+    OPEN AportesCursor
 
-    -- Inicializando variáveis
-    SET @ImpostoTotal = 0;
-    SET @ValorResgateRestante = @ValorResgate;
+    DECLARE @DataAporte DATE, @ValorAporte DECIMAL(18, 2), @PercentualMaximoResgate DECIMAL(5, 2)
+    FETCH NEXT FROM AportesCursor INTO @DataAporte, @ValorAporte, @PercentualMaximoResgate
 
-    -- Loop através dos aportes para cálculo do imposto
-    DECLARE cur CURSOR FOR
-    SELECT Data, Valor
-    FROM @Aportes
-    ORDER BY Data ASC; -- Ordenando aportes do mais antigo para o mais recente
-
-    OPEN cur;
-    FETCH NEXT FROM cur INTO @DataAporte, @ValorAporte;
-
-    WHILE @@FETCH_STATUS = 0 AND @ValorResgateRestante > 0
+    WHILE @@FETCH_STATUS = 0
     BEGIN
-        -- Calculando tempo de acumulação em anos
-        SET @TempoAcumulacao = DATEDIFF(MONTH, @DataAporte, @DataResgate) / 12.0;
+        -- Calcula o tempo de acumulação em anos
+        DECLARE @TempoAcumulacao DECIMAL(10, 2) = DATEDIFF(DAY, @DataAporte, @DataResgate) / 365.0
 
-        -- Determinando alíquota com base no tempo de acumulação
-        IF @TempoAcumulacao <= 2
-            SET @Alquota = 0.35;
-        ELSE IF @TempoAcumulacao <= 4
-            SET @Alquota = 0.30;
-        ELSE IF @TempoAcumulacao <= 6
-            SET @Alquota = 0.25;
-        ELSE IF @TempoAcumulacao <= 8
-            SET @Alquota = 0.20;
-        ELSE IF @TempoAcumulacao <= 10
-            SET @Alquota = 0.15;
-        ELSE
-            SET @Alquota = 0.10;
+        -- Determina a alíquota com base no tempo de acumulação
+        DECLARE @Aliquota DECIMAL(5, 2)
+        SELECT TOP 1 @Aliquota = Aliquota
+        FROM @Aliquotas
+        WHERE @TempoAcumulacao <= ISNULL(Limite, @TempoAcumulacao)
+        ORDER BY Limite
 
-        -- Calculando imposto para o aporte atual
-        SET @ImpostoAporte = @ValorAporte * @Alquota;
+        -- Calcula o valor máximo que pode ser resgatado deste aporte
+        DECLARE @ValorMaximoResgate DECIMAL(18, 2) = @ValorAporte * @PercentualMaximoResgate
 
-        -- Verificando quanto do aporte vamos resgatar
-        IF @ValorResgateRestante >= @ValorAporte
-        BEGIN
-            -- Resgatamos o valor total do aporte
-            SET @ValorResgateRestante = @ValorResgateRestante - @ValorAporte;
-        END
-        ELSE
-        BEGIN
-            -- Resgatamos apenas parte do aporte
-            SET @ImpostoAporte = @ValorResgateRestante * @Alquota;
-            SET @ValorResgateRestante = 0; -- Nada mais a resgatar
-        END;
+        -- Determina o valor a ser resgatado deste aporte
+        DECLARE @ValorResgateAporte DECIMAL(18, 2) = CASE 
+                                                        WHEN @ValorResgateRestante >= @ValorMaximoResgate 
+                                                        THEN @ValorMaximoResgate 
+                                                        ELSE @ValorResgateRestante 
+                                                     END
 
-        -- Somando ao imposto total
-        SET @ImpostoTotal = @ImpostoTotal + @ImpostoAporte;
+        -- Calcula o imposto para o aporte atual
+        DECLARE @ImpostoAporte DECIMAL(18, 2) = @ValorResgateAporte * @Aliquota
 
-        -- Inserindo detalhes do aporte na tabela temporária
-        INSERT INTO #DetalhamentoAportes (Data, Valor, TempoAcumulacao, Aliquota, ImpostoCalculado)
-        VALUES (@DataAporte, @ValorAporte, @TempoAcumulacao, @Alquota, @ImpostoAporte);
+        -- Subtrai o valor resgatado do valor restante
+        SET @ValorResgateRestante = @ValorResgateRestante - @ValorResgateAporte
 
-        FETCH NEXT FROM cur INTO @DataAporte, @ValorAporte;
-    END;
+        -- Soma ao imposto total
+        SET @ImpostoTotal = @ImpostoTotal + @ImpostoAporte
 
-    CLOSE cur;
-    DEALLOCATE cur;
+        -- Armazena detalhes do aporte na tabela temporária
+        INSERT INTO #DetalhamentoAportes (Data, Valor, PercentualMaximoResgate, TempoAcumulacao, Aliquota, ValorResgate, ImpostoCalculado)
+        VALUES (@DataAporte, @ValorAporte, @PercentualMaximoResgate, @TempoAcumulacao, @Aliquota, @ValorResgateAporte, @ImpostoAporte)
 
-    -- Retornando resultados
-    SELECT
-        ImpostoTotalDevido = @ImpostoTotal,
-        DetalhamentoAportes.*
-    FROM #DetalhamentoAportes DetalhamentoAportes;
+        -- Se já resgatou o valor desejado, interrompe o loop
+        IF @ValorResgateRestante <= 0
+            BREAK
 
-    -- Removendo tabela temporária
-    DROP TABLE #DetalhamentoAportes;
-END;
+        FETCH NEXT FROM AportesCursor INTO @DataAporte, @ValorAporte, @PercentualMaximoResgate
+    END
+
+    CLOSE AportesCursor
+    DEALLOCATE AportesCursor
+
+    -- Retorna os resultados
+    SELECT @ImpostoTotal AS ImpostoTotalDevido
+    SELECT * FROM #DetalhamentoAportes
+
+    -- Limpa a tabela temporária
+    DROP TABLE #DetalhamentoAportes
+END
